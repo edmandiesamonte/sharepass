@@ -1,0 +1,97 @@
+service: sharepass
+
+provider:
+  name: aws
+  region: ap-southeast-1
+  environment:
+    APP_DEBUG: true
+    APP_URL: ${construct:website.url}
+    APP_ENV: ${sls:stage} # Or use ${sls:stage} if you want the environment to match the stage
+    SESSION_DRIVER: cookie # Change to database if you have set up a database
+    FILESYSTEM_DISK: s3  # Must always be s3 to allow the auto-delete feature to work
+    AWS_BUCKET: !Ref EncryptedContentStorage
+  iam:
+    role:
+      statements:
+        # Allow Lambda to read and write files in the S3 buckets
+        - Effect: Allow
+          Action: s3:*
+          Resource:
+            - !Sub '${EncryptedContentStorage.Arn}' # the storage bucket
+            - !Sub '${EncryptedContentStorage.Arn}/*' # and everything inside
+
+constructs:
+  website:
+    type: server-side-website
+#    domain: yourcustomdomain.tld
+#    certificate: <certificate ARN> # Must be the ARN located in us-east-1
+    domain: sharepass.thesalesmachine.com
+    certificate: arn:aws:acm:us-east-1:170423204610:certificate/d080e69c-909f-42f7-bdfd-b88d89eaeda4
+    assets:
+      '/build/*': public/build
+      '/favicon.ico': public/favicon.ico
+      '/robots.txt': public/robots.txt
+    forwardedHeaders:
+      - Accept
+      - Accept-Language
+      - Content-Type
+      - Origin
+      - Referer
+      - User-Agent
+      - X-Forwarded-Host
+      - X-Requested-With
+      - X-Csrf-Token
+      - X-Inertia
+
+package:
+  # Files and directories to exclude from deployment
+  patterns:
+    - '!node_modules/**'
+    - '!public/storage'
+    - '!resources/assets/**'
+    - '!storage/**'
+    - '!tests/**'
+    - '!database/*.sqlite'
+
+functions:
+  # This function runs the app
+  web:
+    handler: public/index.php
+    runtime: php-83-fpm
+    timeout: 28 # in seconds (API Gateway has a timeout of 29 seconds)
+    events:
+      - httpApi: '*'
+
+plugins:
+  - ./vendor/bref/bref
+  - serverless-lift
+
+resources:
+  Resources:
+    EncryptedContentStorage:
+      Type: AWS::S3::Bucket
+      Properties:
+        AccessControl: Private
+        LifecycleConfiguration:
+          Rules:
+            - Id: ExpireHourlyFiles
+              Status: Enabled
+              ExpirationInDays: 1 # Delete 1 day after object creation (expiration will be handled by the app)
+              TagFilters:
+                - Key: auto-delete
+                  Value: hour
+            - Id: ExpireDailyFiles
+              Status: Enabled
+              ExpirationInDays: 1 # Delete 1 day after object creation
+              TagFilters:
+                - Key: auto-delete
+                  Value: day
+            - Id: ExpireWeeklyFiles
+              Status: Enabled
+              ExpirationInDays: 7 # Delete 7 days after object creation
+              TagFilters:
+                - Key: auto-delete
+                  Value: week
+        Tags:
+          - Key: environment
+            Value: ${sls:stage}
